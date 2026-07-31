@@ -37,7 +37,7 @@
     </div>
 
     <!-- Chat Area -->
-    <main id="chat-box" class="flex-1 p-4 overflow-y-auto space-y-4 max-w-3xl mx-auto w-full">
+    <main id="chat-box" class="flex-1 p-4 overflow-y-auto space-y-5 max-w-3xl mx-auto w-full">
         <!-- Default Welcome Bubble -->
         <div class="bg-white border border-slate-200 p-4 rounded-xl shadow-sm flex gap-3">
             <div class="bg-slate-100 h-8 w-8 rounded-full flex items-center justify-center shrink-0">
@@ -63,11 +63,7 @@
 
     <script>
         // ===================================================================
-        // MODEL FALLBACK LIST
-        // Sabse pehle wala model try hota hai. Agar wo fail ho jaye (quota
-        // khatam, model available nahi, overload, etc.) to code khud agla
-        // model try karega — poori list khatam hone tak. Isse app kabhi
-        // silently crash nahi karega, UI hamesha same rahega.
+        // MODEL FALLBACK LIST — pehla fail ho to khud agla try hota hai
         // ===================================================================
         const MODEL_FALLBACK_LIST = [
             'gemini-2.5-flash',
@@ -77,18 +73,16 @@
             'gemini-pro-latest'
         ];
 
-        // Kis error pe hum turant agle model pe switch karenge
         function isSwitchableError(status, errBody) {
-            if (status === 404) return true;   // model exist nahi karta is key ke liye
-            if (status === 429) return true;   // quota / rate limit khatam
-            if (status === 503) return true;   // model overloaded
-            if (status >= 500) return true;    // server side issue
+            if (status === 404) return true;
+            if (status === 429) return true;
+            if (status === 503) return true;
+            if (status >= 500) return true;
             const msg = (errBody && errBody.error && errBody.error.message || '').toLowerCase();
             if (msg.includes('not found') || msg.includes('overloaded') || msg.includes('quota')) return true;
             return false;
         }
 
-        // LocalStorage से API Key लोड करना
         document.getElementById('api-key').value = localStorage.getItem('GEMINI_API_KEY') || '';
 
         function toggleSettings() {
@@ -105,9 +99,14 @@
         const SYSTEM_PROMPT = `तुम एक दुनिया के सबसे एडवांस्ड Excel एक्सपर्ट हो। तुम्हारा यूजर कंप्यूटर पर दूसरों के सामने काम कर रहा है और उसे कठिन थ्योरी नहीं चाहिए।
 नियम:
 1. यूजर चाहे कितना भी मुश्किल टास्क पूछे (VBA, Power Query, Pivot, Formulas, Nested IF, XLOOKUP), तुम्हें उसे एकदम सरल हिंदी/हिंग्लिश में 5 साल के बच्चे की तरह समझाना है।
-2. उत्तर हमेशा Step 1, Step 2, Step 3 के रूप में हो।
-3. स्पष्ट बताओ कि माउस कहाँ ले जाना है, कौन-सा बटन दबाना है या कीबोर्ड शॉर्टकट क्या है।
-4. कोई फालतू ज्ञान मत दो, सीधे पॉइंट पर आओ ताकि यूजर तुरंत कंप्यूटर पर क्लिक कर सके।`;
+2. उत्तर हमेशा इसी format में दो, हर step अपनी अलग line पर:
+Step 1: [छोटा शीर्षक]
+[उस step की डिटेल एक-दो लाइन में]
+
+Step 2: [छोटा शीर्षक]
+[उस step की डिटेल एक-दो लाइन में]
+3. स्पष्ट बताओ कि माउस कहाँ ले जाना है, कौन-सा बटन दबाना है या कीबोर्ड शॉर्टकट क्या है। बटन/मेनू के नाम **bold** में लिखो।
+4. कोई फालतू ज्ञान मत दो, सीधे पॉइंट पर आओ। हर step ke beech ek blank line rakho।`;
 
         function escapeHtml(str) {
             const div = document.createElement('div');
@@ -150,16 +149,69 @@
             }
         }
 
+        // Raw AI text ko poore-page-width, numbered step cards mein badalta hai
+        function formatReply(raw) {
+            let text = escapeHtml(raw);
+            text = text.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
+            const lines = text.split('\n');
+
+            let html = '';
+            let inStep = false;
+            let bulletBuffer = [];
+
+            function flushBullets() {
+                if (bulletBuffer.length) {
+                    html += '<ul class="list-disc pl-5 space-y-1 text-slate-600 text-[15px] mb-2">' +
+                        bulletBuffer.map(function (b) { return '<li>' + b + '</li>'; }).join('') +
+                        '</ul>';
+                    bulletBuffer = [];
+                }
+            }
+
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+                if (!line) { flushBullets(); continue; }
+
+                const stepMatch = line.match(/^(?:<b>)?Step\s*(\d+)\s*[:.\-]?\s*(.*?)(?:<\/b>)?$/i);
+                const bulletMatch = line.match(/^[-*]\s+(.*)/);
+
+                if (stepMatch) {
+                    flushBullets();
+                    if (inStep) html += '</div></div>';
+                    const stepNum = stepMatch[1];
+                    const title = stepMatch[2] || '';
+                    html += '' +
+                        '<div class="flex gap-3 mb-4">' +
+                        '<div class="shrink-0 h-8 w-8 rounded-full bg-emerald-600 text-white flex items-center justify-center text-sm font-bold">' + stepNum + '</div>' +
+                        '<div class="flex-1 pt-0.5">' +
+                        (title ? '<p class="font-semibold text-slate-800 text-[15px] mb-1">' + title + '</p>' : '');
+                    inStep = true;
+                } else if (bulletMatch) {
+                    bulletBuffer.push(bulletMatch[1]);
+                } else {
+                    flushBullets();
+                    html += '<p class="text-slate-600 text-[15px] leading-relaxed mb-1">' + line + '</p>';
+                }
+            }
+            flushBullets();
+            if (inStep) html += '</div></div>';
+
+            return html || ('<p class="text-slate-600 text-[15px] leading-relaxed">' + text.replace(/\n/g, '<br>') + '</p>');
+        }
+
         function addBotBubble(reply) {
             const chatBox = document.getElementById('chat-box');
-            reply = reply.replace(/\n/g, '<br>').replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
+            const formatted = formatReply(reply);
             chatBox.innerHTML += `
-                <div class="flex gap-3">
-                    <div class="bg-slate-100 h-8 w-8 rounded-full flex items-center justify-center shrink-0 mt-1">
-                        <i class="fa-solid fa-robot text-emerald-600"></i>
+                <div class="w-full">
+                    <div class="flex items-center gap-2 mb-2 text-emerald-700">
+                        <div class="bg-slate-100 h-7 w-7 rounded-full flex items-center justify-center shrink-0">
+                            <i class="fa-solid fa-robot text-emerald-600 text-xs"></i>
+                        </div>
+                        <span class="text-xs font-bold uppercase tracking-wide">Excel Expert</span>
                     </div>
-                    <div class="bg-white border border-slate-200 p-4 rounded-2xl rounded-tl-none text-slate-700 text-sm leading-relaxed shadow-sm space-y-2">
-                        ${reply}
+                    <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-4">
+                        ${formatted}
                     </div>
                 </div>
             `;
@@ -254,10 +306,7 @@
                     break;
                 } catch (err) {
                     errorsSeen.push(model + ': ' + (err.message || 'unknown error'));
-                    // Agar error switchable nahi hai (jaise galat API key, ya block hua)
-                    // to baaki models try karna bekaar hai — turant ruk jao.
                     if (err.switchable === false) break;
-                    // warna (switchable true ya undefined) agla model try karo
                 }
             }
 

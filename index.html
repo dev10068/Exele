@@ -54,7 +54,7 @@
     <footer class="p-4 bg-white border-t border-slate-200 sticky bottom-0">
         <div class="max-w-3xl mx-auto flex gap-2">
             <input type="text" id="user-input" placeholder="जैसे: Pivot table कैसे बनाते हैं?" class="flex-1 bg-slate-100 border border-slate-300 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-800 placeholder-slate-400" onkeypress="if(event.key==='Enter') sendMessage()">
-            <button onclick="sendMessage()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-3 rounded-xl font-semibold transition flex items-center gap-2 text-sm shadow-sm">
+            <button onclick="sendMessage()" id="send-btn" class="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-3 rounded-xl font-semibold transition flex items-center gap-2 text-sm shadow-sm">
                 <span>पूछो</span>
                 <i class="fa-solid fa-paper-plane text-xs"></i>
             </button>
@@ -62,12 +62,37 @@
     </footer>
 
     <script>
+        // ===================================================================
+        // MODEL FALLBACK LIST
+        // Sabse pehle wala model try hota hai. Agar wo fail ho jaye (quota
+        // khatam, model available nahi, overload, etc.) to code khud agla
+        // model try karega — poori list khatam hone tak. Isse app kabhi
+        // silently crash nahi karega, UI hamesha same rahega.
+        // ===================================================================
+        const MODEL_FALLBACK_LIST = [
+            'gemini-2.5-flash',
+            'gemini-2.5-flash-lite',
+            'gemini-2.5-pro',
+            'gemini-flash-latest',
+            'gemini-pro-latest'
+        ];
+
+        // Kis error pe hum turant agle model pe switch karenge
+        function isSwitchableError(status, errBody) {
+            if (status === 404) return true;   // model exist nahi karta is key ke liye
+            if (status === 429) return true;   // quota / rate limit khatam
+            if (status === 503) return true;   // model overloaded
+            if (status >= 500) return true;    // server side issue
+            const msg = (errBody && errBody.error && errBody.error.message || '').toLowerCase();
+            if (msg.includes('not found') || msg.includes('overloaded') || msg.includes('quota')) return true;
+            return false;
+        }
+
         // LocalStorage से API Key लोड करना
         document.getElementById('api-key').value = localStorage.getItem('GEMINI_API_KEY') || '';
 
         function toggleSettings() {
-            const modal = document.getElementById('settings-modal');
-            modal.classList.toggle('hidden');
+            document.getElementById('settings-modal').classList.toggle('hidden');
         }
 
         function saveApiKey() {
@@ -84,8 +109,119 @@
 3. स्पष्ट बताओ कि माउस कहाँ ले जाना है, कौन-सा बटन दबाना है या कीबोर्ड शॉर्टकट क्या है।
 4. कोई फालतू ज्ञान मत दो, सीधे पॉइंट पर आओ ताकि यूजर तुरंत कंप्यूटर पर क्लिक कर सके।`;
 
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        function addUserBubble(query) {
+            const chatBox = document.getElementById('chat-box');
+            chatBox.innerHTML += `
+                <div class="flex justify-end">
+                    <div class="bg-emerald-600 text-white p-3 rounded-2xl rounded-tr-none max-w-[85%] text-sm shadow-sm">
+                        ${escapeHtml(query)}
+                    </div>
+                </div>
+            `;
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function addLoadingBubble(loadingId, text) {
+            const chatBox = document.getElementById('chat-box');
+            chatBox.innerHTML += `
+                <div id="${loadingId}" class="flex gap-3">
+                    <div class="bg-slate-100 h-8 w-8 rounded-full flex items-center justify-center shrink-0">
+                        <i class="fa-solid fa-robot text-emerald-600"></i>
+                    </div>
+                    <div class="bg-white border border-slate-200 p-3 rounded-2xl rounded-tl-none text-slate-400 text-xs shadow-sm animate-pulse flex items-center gap-2">
+                        <span>${text}</span>
+                    </div>
+                </div>
+            `;
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function updateLoadingText(loadingId, text) {
+            const el = document.getElementById(loadingId);
+            if (el) {
+                const span = el.querySelector('span');
+                if (span) span.textContent = text;
+            }
+        }
+
+        function addBotBubble(reply) {
+            const chatBox = document.getElementById('chat-box');
+            reply = reply.replace(/\n/g, '<br>').replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
+            chatBox.innerHTML += `
+                <div class="flex gap-3">
+                    <div class="bg-slate-100 h-8 w-8 rounded-full flex items-center justify-center shrink-0 mt-1">
+                        <i class="fa-solid fa-robot text-emerald-600"></i>
+                    </div>
+                    <div class="bg-white border border-slate-200 p-4 rounded-2xl rounded-tl-none text-slate-700 text-sm leading-relaxed shadow-sm space-y-2">
+                        ${reply}
+                    </div>
+                </div>
+            `;
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function addErrorBubble(message) {
+            const chatBox = document.getElementById('chat-box');
+            chatBox.innerHTML += `
+                <div class="bg-red-50 border border-red-200 text-red-600 text-xs text-center p-3 rounded-xl">
+                    एरर: ${escapeHtml(message)}
+                </div>
+            `;
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        async function callGemini(model, apiKey, query) {
+            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    contents: [{
+                        parts: [
+                            { text: SYSTEM_PROMPT },
+                            { text: "यूजर का सवाल: " + query }
+                        ]
+                    }]
+                })
+            });
+
+            let data;
+            try {
+                data = await response.json();
+            } catch (e) {
+                throw { switchable: true, message: model + ': जवाब पढ़ने में दिक्कत हुई' };
+            }
+
+            if (!response.ok) {
+                const switchable = isSwitchableError(response.status, data);
+                throw {
+                    switchable: switchable,
+                    message: (data && data.error && data.error.message) || ('HTTP ' + response.status)
+                };
+            }
+
+            const candidate = data.candidates && data.candidates[0];
+            const text = candidate && candidate.content && candidate.content.parts && candidate.content.parts[0] && candidate.content.parts[0].text;
+
+            if (!text) {
+                const blockReason = (candidate && candidate.finishReason) || (data.promptFeedback && data.promptFeedback.blockReason);
+                throw {
+                    switchable: false,
+                    message: blockReason ? ('जवाब ब्लॉक हुआ (' + blockReason + ')') : (model + ': खाली जवाब मिला')
+                };
+            }
+
+            return text;
+        }
+
         async function sendMessage() {
             const input = document.getElementById('user-input');
+            const sendBtn = document.getElementById('send-btn');
             const query = input.value.trim();
             const apiKey = localStorage.getItem('GEMINI_API_KEY');
 
@@ -96,88 +232,42 @@
                 return;
             }
 
-            const chatBox = document.getElementById('chat-box');
-
-            // User Message Bubble
-            chatBox.innerHTML += `
-                <div class="flex justify-end">
-                    <div class="bg-emerald-600 text-white p-3 rounded-2xl rounded-tr-none max-w-[85%] text-sm shadow-sm">
-                        ${query}
-                    </div>
-                </div>
-            `;
+            addUserBubble(query);
             input.value = '';
-            chatBox.scrollTop = chatBox.scrollHeight;
+            sendBtn.disabled = true;
 
-            // Loading State
             const loadingId = 'loading-' + Date.now();
-            chatBox.innerHTML += `
-                <div id="${loadingId}" class="flex gap-3">
-                    <div class="bg-slate-100 h-8 w-8 rounded-full flex items-center justify-center shrink-0">
-                        <i class="fa-solid fa-robot text-emerald-600"></i>
-                    </div>
-                    <div class="bg-white border border-slate-200 p-3 rounded-2xl rounded-tl-none text-slate-400 text-xs shadow-sm animate-pulse flex items-center gap-2">
-                        <span>सोच रहा हूँ, तुरंत आसान स्टेप्स बताता हूँ...</span>
-                    </div>
-                </div>
-            `;
-            chatBox.scrollTop = chatBox.scrollHeight;
+            addLoadingBubble(loadingId, 'सोच रहा हूँ, तुरंत आसान स्टेप्स बताता हूँ...');
 
-            try {
-                // Updated API call to Gemini 2.5 Flash
-                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        contents: [{
-                            parts: [
-                                { text: SYSTEM_PROMPT },
-                                { text: "यूजर का सवाल: " + query }
-                            ]
-                        }]
-                    })
-                });
+            const errorsSeen = [];
+            let success = false;
 
-                const data = await response.json();
-                document.getElementById(loadingId).remove();
-
-                // Agar API ne error status diya (invalid key, quota, model access, etc.)
-                if (!response.ok) {
-                    throw new Error(data.error?.message || `HTTP ${response.status} - कोई जवाब नहीं मिला`);
+            for (let i = 0; i < MODEL_FALLBACK_LIST.length; i++) {
+                const model = MODEL_FALLBACK_LIST[i];
+                try {
+                    if (i > 0) updateLoadingText(loadingId, model + ' पर कोशिश कर रहा हूँ...');
+                    const reply = await callGemini(model, apiKey, query);
+                    const el = document.getElementById(loadingId);
+                    if (el) el.remove();
+                    addBotBubble(reply);
+                    success = true;
+                    break;
+                } catch (err) {
+                    errorsSeen.push(model + ': ' + (err.message || 'unknown error'));
+                    // Agar error switchable nahi hai (jaise galat API key, ya block hua)
+                    // to baaki models try karna bekaar hai — turant ruk jao.
+                    if (err.switchable === false) break;
+                    // warna (switchable true ya undefined) agla model try karo
                 }
-
-                // Agar safety filter ya kisी aur wajah se content block hua
-                const candidate = data.candidates && data.candidates[0];
-                const replyText = candidate && candidate.content && candidate.content.parts && candidate.content.parts[0] && candidate.content.parts[0].text;
-
-                if (replyText) {
-                    let reply = replyText;
-                    // Format response text
-                    reply = reply.replace(/\n/g, '<br>').replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
-
-                    chatBox.innerHTML += `
-                        <div class="flex gap-3">
-                            <div class="bg-slate-100 h-8 w-8 rounded-full flex items-center justify-center shrink-0 mt-1">
-                                <i class="fa-solid fa-robot text-emerald-600"></i>
-                            </div>
-                            <div class="bg-white border border-slate-200 p-4 rounded-2xl rounded-tl-none text-slate-700 text-sm leading-relaxed shadow-sm space-y-2">
-                                ${reply}
-                            </div>
-                        </div>
-                    `;
-                } else {
-                    const blockReason = candidate?.finishReason || data.promptFeedback?.blockReason;
-                    throw new Error(blockReason ? `जवाब ब्लॉक हुआ: ${blockReason}` : 'खाली जवाब मिला');
-                }
-            } catch (err) {
-                document.getElementById(loadingId).remove();
-                chatBox.innerHTML += `
-                    <div class="bg-red-50 border border-red-200 text-red-600 text-xs text-center p-3 rounded-xl">
-                        एरर: ${err.message}
-                    </div>
-                `;
             }
-            chatBox.scrollTop = chatBox.scrollHeight;
+
+            if (!success) {
+                const el = document.getElementById(loadingId);
+                if (el) el.remove();
+                addErrorBubble(errorsSeen[errorsSeen.length - 1] || 'कोई जवाब नहीं मिला, कृपया दोबारा कोशिश करें');
+            }
+
+            sendBtn.disabled = false;
         }
     </script>
 </body>

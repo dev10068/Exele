@@ -141,8 +141,17 @@
                 const data = await response.json();
                 document.getElementById(loadingId).remove();
 
-                if (data.candidates && data.candidates[0].content.parts[0].text) {
-                    let reply = data.candidates[0].content.parts[0].text;
+                // Agar API ne error status diya (invalid key, quota, model access, etc.)
+                if (!response.ok) {
+                    throw new Error(data.error?.message || `HTTP ${response.status} - कोई जवाब नहीं मिला`);
+                }
+
+                // Agar safety filter ya kisी aur wajah se content block hua
+                const candidate = data.candidates && data.candidates[0];
+                const replyText = candidate && candidate.content && candidate.content.parts && candidate.content.parts[0] && candidate.content.parts[0].text;
+
+                if (replyText) {
+                    let reply = replyText;
                     // Format response text
                     reply = reply.replace(/\n/g, '<br>').replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
 
@@ -157,13 +166,14 @@
                         </div>
                     `;
                 } else {
-                    throw new Error("Invalid API Response");
+                    const blockReason = candidate?.finishReason || data.promptFeedback?.blockReason;
+                    throw new Error(blockReason ? `जवाब ब्लॉक हुआ: ${blockReason}` : 'खाली जवाब मिला');
                 }
             } catch (err) {
                 document.getElementById(loadingId).remove();
                 chatBox.innerHTML += `
                     <div class="bg-red-50 border border-red-200 text-red-600 text-xs text-center p-3 rounded-xl">
-                        एरर! रिस्पॉन्स नहीं मिला। कृपया अपनी API Key चेक करें या दोबारा कोशिश करें।
+                        एरर: ${err.message}
                     </div>
                 `;
             }
